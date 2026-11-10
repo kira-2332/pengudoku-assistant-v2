@@ -1,3 +1,4 @@
+
 package com.pengudoku.assistant
 
 import android.app.Activity
@@ -49,10 +50,27 @@ class MainActivity : Activity() {
             requestOverlayPermission()
         }
 
+        val startButton = Button(this)
+        startButton.text = "Start Floating Penguin"
+        startButton.setOnClickListener {
+            startOverlay()
+        }
+
+        val stopButton = Button(this)
+        stopButton.text = "Stop Floating Penguin"
+        stopButton.setOnClickListener {
+            stopService(
+                Intent(this, OverlayService::class.java)
+            )
+            status.text = "Floating Penguin stopped"
+        }
+
         layout.addView(title)
         layout.addView(status)
         layout.addView(captureButton)
         layout.addView(overlayButton)
+        layout.addView(startButton)
+        layout.addView(stopButton)
 
         setContentView(layout)
     }
@@ -80,6 +98,18 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun startOverlay() {
+        if (Settings.canDrawOverlays(this)) {
+            startService(
+                Intent(this, OverlayService::class.java)
+            )
+            status.text = "Floating Penguin started"
+        } else {
+            status.text = "Please allow overlay permission first"
+            requestOverlayPermission()
+        }
+    }
+
     @Deprecated("Deprecated in Android API")
     override fun onActivityResult(
         requestCode: Int,
@@ -98,7 +128,7 @@ class MainActivity : Activity() {
 
         if (requestCode == overlayRequest) {
             status.text = if (Settings.canDrawOverlays(this)) {
-                "Overlay permission granted"
+                "Overlay permission granted. Press Start Floating Penguin."
             } else {
                 "Overlay permission not granted"
             }
