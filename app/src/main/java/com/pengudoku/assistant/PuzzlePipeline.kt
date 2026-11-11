@@ -1,3 +1,4 @@
+
 package com.pengudoku.assistant
 
 import android.content.Context
@@ -5,32 +6,42 @@ import android.content.Intent
 import android.graphics.Bitmap
 
 class PuzzlePipeline(
-    private val context: Context
+    private val context: Context,
+    private val expectedSize: Int = 6
 ) {
     private val boardDetector = BoardDetector()
     private val cellClassifier = CellClassifier()
     private val penguinDetector = PenguinDetector()
     private val analyzer = PuzzleAnalyzer()
     private val solver = PuzzleSolver()
+    private val levelChangeDetector = LevelChangeDetector()
 
-    fun process(
-        bitmap: Bitmap,
-        expectedSize: Int = 6
-    ): Boolean {
-        if (bitmap.isRecycled) return false
+    private var lastBoardBounds: BoardBounds? = null
 
-        val grid = boardDetector.detectGrid(bitmap, expectedSize)
+    fun process(bitmap: Bitmap): Boolean {
+        if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
+            return false
+        }
+
+        val board = boardDetector.detectGrid(bitmap, expectedSize)
             ?: return false
 
-        val classifiedCells = cellClassifier.classify(bitmap, grid)
-            ?: return false
+        val bounds = board.bounds
 
-        val existingPenguins = penguinDetector.detect(bitmap, grid)
+        // Check for a stable level change inside the board area.
+        if (levelChangeDetector.hasLevelChanged(bitmap, bounds)) {
+            hideOverlay()
+        }
+
+        lastBoardBounds = bounds
+
+        val classifiedCells = cellClassifier.classify(bitmap, board)
+        val penguins = penguinDetector.detect(bitmap, board, classifiedCells)
 
         val analysis = analyzer.analyze(
-            size = grid.size,
+            board = board,
             classifiedCells = classifiedCells,
-            penguins = existingPenguins
+            penguins = penguins
         ) ?: return false
 
         val solution = solver.solve(
@@ -39,51 +50,52 @@ class PuzzlePipeline(
             existingPenguins = analysis.existingPenguins
         ) ?: return false
 
-        val suggestedCells = solution.filterNot {
-            (it.row to it.column) in existingPenguins
+        val suggestions = solution.filterNot { cell ->
+            cell.row to cell.column in analysis.existingPenguins
         }
 
-        if (suggestedCells.isEmpty()) return false
-
-        val cellCoordinates = IntArray(suggestedCells.size * 2)
-
-        suggestedCells.forEachIndexed { index, cell ->
-            cellCoordinates[index * 2] = cell.row
-            cellCoordinates[index * 2 + 1] = cell.column
+        if (suggestions.isEmpty()) {
+            hideOverlay()
+            return true
         }
 
-        val overlayIntent = Intent(
-            context,
-            OverlayService::class.java
-        ).apply {
+        val cellWidth = bounds.width.toFloat() / board.size
+        val cellHeight = bounds.height.toFloat() / board.size
+
+        val coordinates = ArrayList<Float>(suggestions.size * 2)
+
+        suggestions.forEach { cell ->
+            val centerX = bounds.left + (cell.column + 0.5f) * cellWidth
+            val centerY = bounds.top + (cell.row + 0.5f) * cellHeight
+
+            coordinates.add(centerX)
+            coordinates.add(centerY)
+        }
+
+        val overlayIntent = Intent(context, OverlayService::class.java).apply {
             action = OverlayService.ACTION_SHOW
-            putExtra(OverlayService.EXTRA_CELLS, cellCoordinates)
-            putExtra(OverlayService.EXTRA_SIZE, grid.size)
-            putExtra(OverlayService.EXTRA_LEFT, grid.bounds.left)
-            putExtra(OverlayService.EXTRA_TOP, grid.bounds.top)
-            putExtra(OverlayService.EXTRA_CELL_WIDTH, grid.cellWidth)
-            putExtra(OverlayService.EXTRA_CELL_HEIGHT, grid.cellHeight)
+            putExtra(OverlayService.EXTRA_COORDINATES, coordinates.toFloatArray())
+            putExtra(OverlayService.EXTRA_GRID_SIZE, board.size)
+            putExtra(OverlayService.EXTRA_LEFT, bounds.left.toFloat())
+            putExtra(OverlayService.EXTRA_TOP, bounds.top.toFloat())
+            putExtra(OverlayService.EXTRA_CELL_WIDTH, cellWidth)
+            putExtra(OverlayService.EXTRA_CELL_HEIGHT, cellHeight)
         }
 
-        return try {
-            context.startService(overlayIntent)
-            true
-        } catch (_: Exception) {
-            false
-        }
+        context.startService(overlayIntent)
+        return true
     }
 
     fun hideOverlay() {
-        val intent = Intent(
-            context,
-            OverlayService::class.java
-        ).apply {
+        val intent = Intent(context, OverlayService::class.java).apply {
             action = OverlayService.ACTION_HIDE
         }
+        context.startService(intent)
+    }
 
-        try {
-            context.startService(intent)
-        } catch (_: Exception) {
-        }
+    fun resetLevelDetection() {
+        levelChangeDetector.reset()
+        lastBoardBounds = null
+        hideOverlay()
     }
 }
