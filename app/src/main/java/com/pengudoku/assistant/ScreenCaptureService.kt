@@ -1,3 +1,4 @@
+
 package com.pengudoku.assistant
 
 import android.app.Notification
@@ -15,8 +16,6 @@ import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
-import android.os.Handler
-import android.os.HandlerThread
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.DisplayMetrics
@@ -37,22 +36,14 @@ class ScreenCaptureService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
 
-    private var captureThread: HandlerThread? = null
-    private var captureHandler: Handler? = null
-
-    private var pipeline: PuzzlePipeline? = null
-    private var lastProcessedAt = 0L
+    private lateinit var pipeline: PuzzlePipeline
+    private var lastProcessedTime = 0L
+    private var processingImage = false
 
     override fun onCreate() {
         super.onCreate()
+        pipeline = PuzzlePipeline(this)
         createNotificationChannel()
-
-        pipeline = PuzzlePipeline(applicationContext)
-
-        captureThread = HandlerThread("PengudokuCapture").apply {
-            start()
-        }
-        captureHandler = Handler(captureThread!!.looper)
     }
 
     override fun onStartCommand(
@@ -66,9 +57,7 @@ class ScreenCaptureService : Service() {
             return START_NOT_STICKY
         }
 
-        val resultCode = intent?.getIntExtra(
-            EXTRA_RESULT_CODE, 0
-        ) ?: 0
+        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
 
         @Suppress("DEPRECATION")
         val resultData = intent?.getParcelableExtra<Intent>(
@@ -84,10 +73,7 @@ class ScreenCaptureService : Service() {
             Context.MEDIA_PROJECTION_SERVICE
         ) as MediaProjectionManager
 
-        projection = manager.getMediaProjection(
-            resultCode,
-            resultData
-        )
+        projection = manager.getMediaProjection(resultCode, resultData)
 
         if (projection == null) {
             stopSelf()
@@ -119,39 +105,39 @@ class ScreenCaptureService : Service() {
             2
         )
 
-        imageReader?.setOnImageAvailableListener(
-            { reader ->
-                val now = SystemClock.elapsedRealtime()
+        imageReader?.setOnImageAvailableListener({ reader ->
+            if (processingImage) {
+                reader.acquireLatestImage()?.close()
+                return@setOnImageAvailableListener
+            }
 
-                if (now - lastProcessedAt < CAPTURE_INTERVAL_MS) {
-                    val skippedImage = reader.acquireLatestImage()
-                    skippedImage?.close()
-                    return@setOnImageAvailableListener
-                }
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastProcessedTime < CAPTURE_INTERVAL_MS) {
+                reader.acquireLatestImage()?.close()
+                return@setOnImageAvailableListener
+            }
 
-                val image = reader.acquireLatestImage()
-                    ?: return@setOnImageAvailableListener
+            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
 
-                lastProcessedAt = now
+            processingImage = true
+            lastProcessedTime = now
 
-                try {
-                    val bitmap = imageToBitmap(image)
-
-                    if (bitmap != null) {
-                        try {
-                            pipeline?.process(bitmap, expectedSize = 6)
-                        } finally {
-                            bitmap.recycle()
-                        }
+            try {
+                val bitmap = imageToBitmap(image)
+                if (bitmap != null) {
+                    try {
+                        pipeline.process(bitmap)
+                    } finally {
+                        bitmap.recycle()
                     }
-                } catch (_: Exception) {
-                    // Ignore a bad frame and continue capturing.
-                } finally {
-                    image.close()
                 }
-            },
-            captureHandler
-        )
+            } catch (_: Exception) {
+                // Ignore a single failed frame and continue capturing.
+            } finally {
+                image.close()
+                processingImage = false
+            }
+        }, null)
 
         virtualDisplay = projection?.createVirtualDisplay(
             "PengudokuScreen",
@@ -161,52 +147,43 @@ class ScreenCaptureService : Service() {
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader?.surface,
             null,
-            captureHandler
+            null
         )
     }
 
     private fun imageToBitmap(image: Image): Bitmap? {
         val plane = image.planes.firstOrNull() ?: return null
         val buffer = plane.buffer
-        val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
 
-        val width = image.width
-        val height = image.height
+        if (pixelStride <= 0 || rowStride <= 0) return null
 
-        if (width <= 0 || height <= 0) return null
-        if (pixelStride < 4 || rowStride < width * pixelStride) return null
+        val rowPadding = rowStride - pixelStride * image.width
+        val paddedWidth = image.width + rowPadding / pixelStride
 
-        val bytes = ByteArray(buffer.remaining())
-        buffer.get(bytes)
-
-        val pixels = IntArray(width * height)
-
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val offset = y * rowStride + x * pixelStride
-
-                if (offset + 3 >= bytes.size) return null
-
-                val red = bytes[offset].toInt() and 0xFF
-                val green = bytes[offset + 1].toInt() and 0xFF
-                val blue = bytes[offset + 2].toInt() and 0xFF
-                val alpha = bytes[offset + 3].toInt() and 0xFF
-
-                pixels[y * width + x] =
-                    (alpha shl 24) or
-                    (red shl 16) or
-                    (green shl 8) or
-                    blue
-            }
-        }
-
-        return Bitmap.createBitmap(
-            pixels,
-            width,
-            height,
+        val paddedBitmap = Bitmap.createBitmap(
+            paddedWidth,
+            image.height,
             Bitmap.Config.ARGB_8888
         )
+
+        buffer.rewind()
+        paddedBitmap.copyPixelsFromBuffer(buffer)
+
+        val croppedBitmap = Bitmap.createBitmap(
+            paddedBitmap,
+            0,
+            0,
+            image.width,
+            image.height
+        )
+
+        if (croppedBitmap !== paddedBitmap) {
+            paddedBitmap.recycle()
+        }
+
+        return croppedBitmap
     }
 
     private fun createNotificationChannel() {
@@ -220,7 +197,6 @@ class ScreenCaptureService : Service() {
             val manager = getSystemService(
                 NotificationManager::class.java
             )
-
             manager.createNotificationChannel(channel)
         }
     }
@@ -245,6 +221,8 @@ class ScreenCaptureService : Service() {
     override fun onDestroy() {
         imageReader?.setOnImageAvailableListener(null, null)
 
+        pipeline.hideOverlay()
+
         virtualDisplay?.release()
         virtualDisplay = null
 
@@ -253,13 +231,6 @@ class ScreenCaptureService : Service() {
 
         projection?.stop()
         projection = null
-
-        pipeline?.hideOverlay()
-        pipeline = null
-
-        captureThread?.quitSafely()
-        captureThread = null
-        captureHandler = null
 
         super.onDestroy()
     }
