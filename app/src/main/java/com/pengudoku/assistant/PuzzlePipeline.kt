@@ -15,10 +15,9 @@ class PuzzlePipeline(
     private val solver = PuzzleSolver()
     private val levelChangeDetector = LevelChangeDetector()
 
-    private var lastBoardBounds: BoardBounds? = null
-
     fun process(bitmap: Bitmap): Boolean {
         if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
+            hideOverlay()
             return false
         }
 
@@ -27,18 +26,17 @@ class PuzzlePipeline(
 
         val bounds = board.bounds
 
-        // Check for a stable level change inside the board area.
         if (levelChangeDetector.hasLevelChanged(bitmap, bounds)) {
             hideOverlay()
         }
 
-        lastBoardBounds = bounds
-
         val classifiedCells = cellClassifier.classify(bitmap, board)
-        val penguins = penguinDetector.detect(bitmap, board, classifiedCells)
+            ?: return false
+
+        val penguins = penguinDetector.detect(bitmap, board)
 
         val analysis = analyzer.analyze(
-            board = board,
+            size = board.size,
             classifiedCells = classifiedCells,
             penguins = penguins
         ) ?: return false
@@ -49,8 +47,8 @@ class PuzzlePipeline(
             existingPenguins = analysis.existingPenguins
         ) ?: return false
 
-        val suggestions = solution.filterNot { cell ->
-            cell.row to cell.column in analysis.existingPenguins
+        val suggestions = solution.filterNot {
+            (it.row to it.column) in analysis.existingPenguins
         }
 
         if (suggestions.isEmpty()) {
@@ -58,25 +56,22 @@ class PuzzlePipeline(
             return true
         }
 
+        val cells = IntArray(suggestions.size * 2)
+
+        suggestions.forEachIndexed { index, cell ->
+            cells[index * 2] = cell.row
+            cells[index * 2 + 1] = cell.column
+        }
+
         val cellWidth = bounds.width.toFloat() / board.size
         val cellHeight = bounds.height.toFloat() / board.size
 
-        val coordinates = ArrayList<Float>(suggestions.size * 2)
-
-        suggestions.forEach { cell ->
-            val centerX = bounds.left + (cell.column + 0.5f) * cellWidth
-            val centerY = bounds.top + (cell.row + 0.5f) * cellHeight
-
-            coordinates.add(centerX)
-            coordinates.add(centerY)
-        }
-
         val overlayIntent = Intent(context, OverlayService::class.java).apply {
             action = OverlayService.ACTION_SHOW
-            putExtra(OverlayService.EXTRA_COORDINATES, coordinates.toFloatArray())
-            putExtra(OverlayService.EXTRA_GRID_SIZE, board.size)
-            putExtra(OverlayService.EXTRA_LEFT, bounds.left.toFloat())
-            putExtra(OverlayService.EXTRA_TOP, bounds.top.toFloat())
+            putExtra(OverlayService.EXTRA_CELLS, cells)
+            putExtra(OverlayService.EXTRA_SIZE, board.size)
+            putExtra(OverlayService.EXTRA_LEFT, bounds.left)
+            putExtra(OverlayService.EXTRA_TOP, bounds.top)
             putExtra(OverlayService.EXTRA_CELL_WIDTH, cellWidth)
             putExtra(OverlayService.EXTRA_CELL_HEIGHT, cellHeight)
         }
@@ -94,5 +89,6 @@ class PuzzlePipeline(
 
     fun resetLevelDetection() {
         levelChangeDetector.reset()
-        lastBoardBounds = null
         hideOverlay()
+    }
+}
