@@ -1,4 +1,3 @@
-
 package com.pengudoku.assistant
 
 import android.app.Activity
@@ -122,8 +121,14 @@ class MainActivity : Activity() {
             this,
             ScreenCaptureService::class.java
         ).apply {
-            putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
-            putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
+            putExtra(
+                ScreenCaptureService.EXTRA_RESULT_CODE,
+                resultCode
+            )
+            putExtra(
+                ScreenCaptureService.EXTRA_RESULT_DATA,
+                data
+            )
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
