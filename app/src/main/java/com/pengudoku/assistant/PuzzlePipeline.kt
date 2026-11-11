@@ -1,4 +1,3 @@
-
 package com.pengudoku.assistant
 
 import android.content.Context
@@ -97,5 +96,3 @@ class PuzzlePipeline(
         levelChangeDetector.reset()
         lastBoardBounds = null
         hideOverlay()
-    }
-}
