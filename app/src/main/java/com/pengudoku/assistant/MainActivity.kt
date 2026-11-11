@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
@@ -17,7 +18,6 @@ class MainActivity : Activity() {
 
     private val captureRequest = 1001
     private val overlayRequest = 1002
-
     private lateinit var status: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -59,10 +59,17 @@ class MainActivity : Activity() {
         val stopButton = Button(this)
         stopButton.text = "Stop Floating Penguin"
         stopButton.setOnClickListener {
-            stopService(
-                Intent(this, OverlayService::class.java)
-            )
+            stopService(Intent(this, OverlayService::class.java))
             status.text = "Floating Penguin stopped"
+        }
+
+        val stopCaptureButton = Button(this)
+        stopCaptureButton.text = "Stop Screen Capture"
+        stopCaptureButton.setOnClickListener {
+            stopService(
+                Intent(this, ScreenCaptureService::class.java)
+            )
+            status.text = "Screen capture stopped"
         }
 
         layout.addView(title)
@@ -71,6 +78,7 @@ class MainActivity : Activity() {
         layout.addView(overlayButton)
         layout.addView(startButton)
         layout.addView(stopButton)
+        layout.addView(stopCaptureButton)
 
         setContentView(layout)
     }
@@ -110,6 +118,33 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun startCaptureService(
+        resultCode: Int,
+        data: Intent
+    ) {
+        val serviceIntent = Intent(
+            this,
+            ScreenCaptureService::class.java
+        ).apply {
+            putExtra(
+                ScreenCaptureService.EXTRA_RESULT_CODE,
+                resultCode
+            )
+            putExtra(
+                ScreenCaptureService.EXTRA_RESULT_DATA,
+                data
+            )
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+
+        status.text = "Screen capture service started"
+    }
+
     @Deprecated("Deprecated in Android API")
     override fun onActivityResult(
         requestCode: Int,
@@ -119,16 +154,16 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
 
         if (requestCode == captureRequest) {
-            status.text = if (resultCode == RESULT_OK) {
-                "Screen capture permission granted"
+            if (resultCode == RESULT_OK && data != null) {
+                startCaptureService(resultCode, data)
             } else {
-                "Screen capture permission denied"
+                status.text = "Screen capture permission denied"
             }
         }
 
         if (requestCode == overlayRequest) {
             status.text = if (Settings.canDrawOverlays(this)) {
-                "Overlay permission granted. Press Start Floating Penguin."
+                "Overlay permission granted"
             } else {
                 "Overlay permission not granted"
             }
