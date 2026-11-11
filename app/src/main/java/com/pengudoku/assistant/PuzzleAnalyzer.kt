@@ -1,3 +1,4 @@
+
 package com.pengudoku.assistant
 
 data class PuzzleAnalysis(
@@ -13,25 +14,41 @@ class PuzzleAnalyzer {
         classifiedCells: List<ClassifiedCell>,
         penguins: Set<Pair<Int, Int>>
     ): PuzzleAnalysis? {
+
         if (size <= 0) return null
         if (classifiedCells.size != size * size) return null
 
         val colorGrid = Array(size) { IntArray(size) { -1 } }
         val blockedGrid = Array(size) { BooleanArray(size) }
+        val occupied = Array(size) { BooleanArray(size) }
 
         for (cell in classifiedCells) {
-            if (cell.row !in 0 until size ||
-                cell.column !in 0 until size
-            ) return null
+            val row = cell.row
+            val column = cell.column
 
-            colorGrid[cell.row][cell.column] =
+            if (row !in 0 until size || column !in 0 until size) {
+                return null
+            }
+
+            // Reject duplicate cell coordinates.
+            if (occupied[row][column]) return null
+            occupied[row][column] = true
+
+            if (!cell.blocked && cell.colorId < 0) return null
+
+            colorGrid[row][column] =
                 if (cell.blocked) -1 else cell.colorId
 
-            blockedGrid[cell.row][cell.column] = cell.blocked
+            blockedGrid[row][column] = cell.blocked
         }
 
+        // Ensure every board position was classified.
+        if (occupied.any { row -> row.any { !it } }) return null
+
         if (penguins.any { (row, column) ->
-                row !in 0 until size || column !in 0 until size
+                row !in 0 until size ||
+                column !in 0 until size ||
+                blockedGrid[row][column]
             }
         ) return null
 
