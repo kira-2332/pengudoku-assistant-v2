@@ -66,9 +66,7 @@ class MainActivity : Activity() {
         val stopCaptureButton = Button(this)
         stopCaptureButton.text = "Stop Screen Capture"
         stopCaptureButton.setOnClickListener {
-            stopService(
-                Intent(this, ScreenCaptureService::class.java)
-            )
+            stopService(Intent(this, ScreenCaptureService::class.java))
             status.text = "Screen capture stopped"
         }
 
@@ -108,9 +106,7 @@ class MainActivity : Activity() {
 
     private fun startOverlay() {
         if (Settings.canDrawOverlays(this)) {
-            startService(
-                Intent(this, OverlayService::class.java)
-            )
+            startService(Intent(this, OverlayService::class.java))
             status.text = "Floating Penguin started"
         } else {
             status.text = "Please allow overlay permission first"
@@ -126,14 +122,8 @@ class MainActivity : Activity() {
             this,
             ScreenCaptureService::class.java
         ).apply {
-            putExtra(
-                ScreenCaptureService.EXTRA_RESULT_CODE,
-                resultCode
-            )
-            putExtra(
-                ScreenCaptureService.EXTRA_RESULT_DATA,
-                data
-            )
+            putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
+            putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
