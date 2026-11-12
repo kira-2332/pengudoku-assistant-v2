@@ -16,10 +16,13 @@ import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.WindowManager
+import java.nio.ByteBuffer
 
 class ScreenCaptureService : Service() {
 
@@ -37,13 +40,23 @@ class ScreenCaptureService : Service() {
     private var imageReader: ImageReader? = null
 
     private lateinit var pipeline: PuzzlePipeline
-    private var lastProcessedTime = 0L
+    private var workerThread: HandlerThread? = null
+    private var workerHandler: Handler? = null
+
+    @Volatile
     private var processingImage = false
+
+    private var lastProcessedTime = 0L
 
     override fun onCreate() {
         super.onCreate()
         pipeline = PuzzlePipeline(this)
         createNotificationChannel()
+
+        workerThread = HandlerThread("PengudokuProcessor").apply {
+            start()
+        }
+        workerHandler = Handler(workerThread!!.looper)
     }
 
     override fun onStartCommand(
@@ -57,7 +70,8 @@ class ScreenCaptureService : Service() {
             return START_NOT_STICKY
         }
 
-        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
+        val resultCode =
+            intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
 
         @Suppress("DEPRECATION")
         val resultData = intent?.getParcelableExtra<Intent>(
@@ -69,18 +83,26 @@ class ScreenCaptureService : Service() {
             return START_NOT_STICKY
         }
 
-        val manager = getSystemService(
-            Context.MEDIA_PROJECTION_SERVICE
-        ) as MediaProjectionManager
+        try {
+            val manager = getSystemService(
+                Context.MEDIA_PROJECTION_SERVICE
+            ) as MediaProjectionManager
 
-        projection = manager.getMediaProjection(resultCode, resultData)
+            projection = manager.getMediaProjection(
+                resultCode,
+                resultData
+            )
 
-        if (projection == null) {
+            if (projection == null) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
+            startCapture()
+        } catch (_: Exception) {
             stopSelf()
-            return START_NOT_STICKY
         }
 
-        startCapture()
         return START_NOT_STICKY
     }
 
@@ -98,6 +120,11 @@ class ScreenCaptureService : Service() {
         val height = metrics.heightPixels
         val density = metrics.densityDpi
 
+        if (width <= 0 || height <= 0) {
+            stopSelf()
+            return
+        }
+
         imageReader = ImageReader.newInstance(
             width,
             height,
@@ -105,39 +132,50 @@ class ScreenCaptureService : Service() {
             2
         )
 
-        imageReader?.setOnImageAvailableListener({ reader ->
-            if (processingImage) {
-                reader.acquireLatestImage()?.close()
-                return@setOnImageAvailableListener
-            }
+        imageReader?.setOnImageAvailableListener(
+            { reader ->
+                val now = SystemClock.elapsedRealtime()
 
-            val now = SystemClock.elapsedRealtime()
-            if (now - lastProcessedTime < CAPTURE_INTERVAL_MS) {
-                reader.acquireLatestImage()?.close()
-                return@setOnImageAvailableListener
-            }
-
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-
-            processingImage = true
-            lastProcessedTime = now
-
-            try {
-                val bitmap = imageToBitmap(image)
-                if (bitmap != null) {
-                    try {
-                        pipeline.process(bitmap)
-                    } finally {
-                        bitmap.recycle()
-                    }
+                if (now - lastProcessedTime < CAPTURE_INTERVAL_MS) {
+                    reader.acquireLatestImage()?.close()
+                    return@setOnImageAvailableListener
                 }
-            } catch (_: Exception) {
-                // Ignore a single failed frame and continue capturing.
-            } finally {
-                image.close()
-                processingImage = false
-            }
-        }, null)
+
+                if (processingImage) {
+                    reader.acquireLatestImage()?.close()
+                    return@setOnImageAvailableListener
+                }
+
+                val image = reader.acquireLatestImage()
+                    ?: return@setOnImageAvailableListener
+
+                processingImage = true
+                lastProcessedTime = now
+
+                workerHandler?.post {
+                    try {
+                        val bitmap = imageToBitmap(image)
+
+                        if (bitmap != null) {
+                            try {
+                                pipeline.process(bitmap)
+                            } finally {
+                                bitmap.recycle()
+                            }
+                        }
+                    } catch (_: Exception) {
+                        // Continue after a failed frame.
+                    } finally {
+                        image.close()
+                        processingImage = false
+                    }
+                } ?: run {
+                    image.close()
+                    processingImage = false
+                }
+            },
+            null
+        )
 
         virtualDisplay = projection?.createVirtualDisplay(
             "PengudokuScreen",
@@ -153,14 +191,20 @@ class ScreenCaptureService : Service() {
 
     private fun imageToBitmap(image: Image): Bitmap? {
         val plane = image.planes.firstOrNull() ?: return null
-        val buffer = plane.buffer
+
+        val buffer: ByteBuffer = plane.buffer
         val pixelStride = plane.pixelStride
         val rowStride = plane.rowStride
 
         if (pixelStride <= 0 || rowStride <= 0) return null
 
-        val rowPadding = rowStride - pixelStride * image.width
-        val paddedWidth = image.width + rowPadding / pixelStride
+        val rowPadding =
+            rowStride - pixelStride * image.width
+
+        val paddedWidth =
+            image.width + rowPadding / pixelStride
+
+        if (paddedWidth <= 0) return null
 
         val paddedBitmap = Bitmap.createBitmap(
             paddedWidth,
@@ -168,22 +212,29 @@ class ScreenCaptureService : Service() {
             Bitmap.Config.ARGB_8888
         )
 
-        buffer.rewind()
-        paddedBitmap.copyPixelsFromBuffer(buffer)
+        return try {
+            buffer.rewind()
+            paddedBitmap.copyPixelsFromBuffer(buffer)
 
-        val croppedBitmap = Bitmap.createBitmap(
-            paddedBitmap,
-            0,
-            0,
-            image.width,
-            image.height
-        )
+            val croppedBitmap = Bitmap.createBitmap(
+                paddedBitmap,
+                0,
+                0,
+                image.width,
+                image.height
+            )
 
-        if (croppedBitmap !== paddedBitmap) {
-            paddedBitmap.recycle()
+            if (croppedBitmap !== paddedBitmap) {
+                paddedBitmap.recycle()
+            }
+
+            croppedBitmap
+        } catch (_: Exception) {
+            if (!paddedBitmap.isRecycled) {
+                paddedBitmap.recycle()
+            }
+            null
         }
-
-        return croppedBitmap
     }
 
     private fun createNotificationChannel() {
@@ -197,6 +248,7 @@ class ScreenCaptureService : Service() {
             val manager = getSystemService(
                 NotificationManager::class.java
             )
+
             manager.createNotificationChannel(channel)
         }
     }
@@ -231,6 +283,12 @@ class ScreenCaptureService : Service() {
 
         projection?.stop()
         projection = null
+
+        workerHandler?.removeCallbacksAndMessages(null)
+        workerThread?.quitSafely()
+
+        workerThread = null
+        workerHandler = null
 
         super.onDestroy()
     }
